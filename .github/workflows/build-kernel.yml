@@ -53,8 +53,8 @@ on:
         description: '[Custom] Kernel Defconfig (only if device=custom)'
         required: false
         default: ''
-      custom_localversion:
-        description: 'Kernel Version Suffix (LOCALVERSION, e.g. -BakaSU-polaris; empty = auto)'
+      kernel_localversion:
+        description: 'Kernel Version Suffix (e.g. -BakaSU-polaris; empty = auto-derived from root solution and device)'
         required: false
         type: string
         default: ''
@@ -157,16 +157,17 @@ jobs:
           echo "CHECK_CONFIGS=${CHECK_CONFIGS:-}" >> $GITHUB_ENV
 
           # Determine KERNEL_LOCALVERSION
-          if [ -n "${{ github.event.inputs.custom_localversion }}" ]; then
-            INPUT_LV="${{ github.event.inputs.custom_localversion }}"
+          INPUT_LV="${{ github.event.inputs.kernel_localversion || github.event.inputs.custom_localversion }}"
+          if [ -n "$INPUT_LV" ]; then
             [[ "$INPUT_LV" != -* ]] && INPUT_LV="-$INPUT_LV"
             FINAL_LOCALVERSION="$INPUT_LV"
           elif [ "$RELEASE_MODE" = "nightly" ]; then
-            FINAL_LOCALVERSION="-BakaSU-${DEVICE_NAME}-nightly"
+            FINAL_LOCALVERSION="-${SU_LABEL}-${DEVICE_NAME}-nightly"
           else
-            FINAL_LOCALVERSION="${KERNEL_LOCALVERSION:--BakaSU-${DEVICE_NAME}}"
+            FINAL_LOCALVERSION="${KERNEL_LOCALVERSION:--${SU_LABEL}-${DEVICE_NAME}}"
           fi
           echo "FINAL_LOCALVERSION=$FINAL_LOCALVERSION" >> $GITHUB_ENV
+          echo "BASE_BOOT_URL=${BASE_BOOT_URL:-}" >> $GITHUB_ENV
           echo "[+] Final kernel version suffix: $FINAL_LOCALVERSION"
 
       - name: Install System Build Dependencies
@@ -266,6 +267,8 @@ jobs:
       - name: Build Kernel
         run: |
           cd kernel-source
+          # Prevent scripts/setlocalversion from appending '+'
+          touch .scmversion
           export PATH="${{ env.CLANG_DIR }}/bin:$PATH"
           export ARCH=${{ env.ARCH }}
           export SUBARCH=${{ env.ARCH }}
@@ -296,11 +299,11 @@ jobs:
             LD="$LD_WRAPPER"
             LLVM=1
             LLVM_IAS=1
+            LOCALVERSION=""
             CLANG_TRIPLE="aarch64-linux-gnu-"
             CROSS_COMPILE="aarch64-linux-gnu-"
             CROSS_COMPILE_COMPAT="arm-linux-gnueabi-"
           )
-
           echo "[+] Generating defconfig: ${{ env.KERNEL_DEFCONFIG }}..."
           make "${MAKE_ARGS[@]}" ${{ env.KERNEL_DEFCONFIG }}
 
@@ -544,11 +547,43 @@ jobs:
           echo "RELEASE_ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
           echo "BUILD_DATE=$DATE_TAG" >> $GITHUB_ENV
 
-      - name: Upload Build Artifact
+      - name: Package Standalone Fastboot Boot Image
+        if: ${{ env.BASE_BOOT_URL != '' }}
+        run: |
+          echo "[+] Packaging standalone fastboot boot.img from base asset..."
+          chmod +x tools/magiskboot-x86_64
+          curl -sL "${{ env.BASE_BOOT_URL }}" -o base_boot.img
+
+          if [ "${{ env.RELEASE_MODE }}" = "nightly" ]; then
+            BOOT_IMG_NAME="${{ env.SU_LABEL }}-${{ env.DEVICE_NAME }}-boot-nightly.img"
+          else
+            BOOT_IMG_NAME="${{ env.SU_LABEL }}-${{ env.DEVICE_NAME }}-boot-${{ env.BUILD_DATE }}.img"
+          fi
+
+          mkdir -p boot_repack
+          cd boot_repack
+          ../tools/magiskboot-x86_64 unpack -h ../base_boot.img
+
+          # Replace kernel and strip obsolete DTB blobs
+          rm -f kernel_dtb dtb extra recovery_dtbo 2>/dev/null
+          cp -f "${{ env.KERNEL_OUTPUT_BIN }}" kernel
+
+          # Repack
+          ../tools/magiskboot-x86_64 repack ../base_boot.img "../$BOOT_IMG_NAME"
+          cd ..
+
+          echo "BOOT_IMG_PATH=$(pwd)/$BOOT_IMG_NAME" >> $GITHUB_ENV
+          echo "BOOT_IMG_NAME=$BOOT_IMG_NAME" >> $GITHUB_ENV
+          echo "[+] Standalone boot image generated: $BOOT_IMG_NAME ($(ls -lh "$BOOT_IMG_NAME" | awk '{print $5}'))"
+          sha256sum "$BOOT_IMG_NAME"
+
+      - name: Upload Build Artifacts
         uses: actions/upload-artifact@v7
         with:
           name: ${{ env.RELEASE_ZIP_NAME }}
-          path: ${{ env.RELEASE_ZIP_PATH }}
+          path: |
+            ${{ env.RELEASE_ZIP_PATH }}
+            ${{ env.BOOT_IMG_PATH }}
 
       - name: Publish Official GitHub Release
         if: env.RELEASE_MODE == 'release'
@@ -565,13 +600,20 @@ jobs:
             - **Kernel Version**: `4.19.325${{ env.FINAL_LOCALVERSION }}`
             - **Root Solution**: `${{ env.SU_LABEL }} (${{ env.SU_TYPE }})`
             
-            #### 刷入方式：
-            1. 下载下方的 `.zip` 刷机包。
-            2. 重启手机进入 Axion / AOSP 官方 Recovery。
+            #### 刷入方式（任选其一）：
+            ##### 方式 A：Recovery 卡刷（推荐）
+            1. 下载下方的 `${{ env.RELEASE_ZIP_NAME }}` 刷机包。
+            2. 重启手机进入 Recovery（TWRP / Lineage / Axion Recovery）。
             3. 选择 `Apply update` -> `Apply from ADB`。
-            4. 电脑运行 `adb sideload <文件名>.zip`。
+            4. 电脑运行 `adb sideload ${{ env.RELEASE_ZIP_NAME }}`。
+
+            ##### 方式 B：Fastboot 线刷（最简便）
+            1. 下载下方的 `${{ env.BOOT_IMG_NAME }}` 镜像。
+            2. 手机进入 Bootloader（Fastboot 模式）。
+            3. 电脑运行 `fastboot flash boot ${{ env.BOOT_IMG_NAME }}`，随后 `fastboot reboot`。
           files: |
             ${{ env.RELEASE_ZIP_PATH }}
+            ${{ env.BOOT_IMG_PATH }}
             ${{ env.KERNEL_OUTPUT_BIN }}
 
       - name: Publish Rolling Nightly GitHub Release
@@ -584,7 +626,7 @@ jobs:
           make_latest: false
           body: |
             ### [Nightly] ${{ env.SU_LABEL }} Kernel Rolling Build
-            *自动滚动更新的每夜版内核，始终包含最新内核优化与 BakaSU 驱动。*
+            *自动滚动更新的每夜版内核，始终包含最新内核优化与 ${{ env.SU_LABEL }} 驱动。*
             
             - **Device**: `${{ env.DEVICE_MODEL }} (${{ env.DEVICE_NAME }})`
             - **Kernel Source**: `${{ env.KERNEL_REPO }}`
@@ -593,11 +635,18 @@ jobs:
             - **Kernel Version**: `4.19.325${{ env.FINAL_LOCALVERSION }}`
             - **Build Date**: `${{ env.BUILD_DATE }}`
             
-            #### 刷入方式：
+            #### 刷入方式（任选其一）：
+            ##### 方式 A：Recovery 卡刷（推荐）
             1. 下载下方的 `${{ env.RELEASE_ZIP_NAME }}` 刷机包。
-            2. 重启手机进入 Axion / AOSP 官方 Recovery。
+            2. 重启手机进入 Recovery（TWRP / Lineage / Axion Recovery）。
             3. 选择 `Apply update` -> `Apply from ADB`。
             4. 电脑运行 `adb sideload ${{ env.RELEASE_ZIP_NAME }}`。
+
+            ##### 方式 B：Fastboot 线刷（最简便）
+            1. 下载下方的 `${{ env.BOOT_IMG_NAME }}` 镜像。
+            2. 手机进入 Bootloader（Fastboot 模式）。
+            3. 电脑运行 `fastboot flash boot ${{ env.BOOT_IMG_NAME }}`，随后 `fastboot reboot`。
           files: |
             ${{ env.RELEASE_ZIP_PATH }}
+            ${{ env.BOOT_IMG_PATH }}
             ${{ env.KERNEL_OUTPUT_BIN }}
