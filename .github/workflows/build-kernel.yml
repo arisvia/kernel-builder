@@ -69,6 +69,11 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-24.04
+    env:
+      CCACHE_COMPILERCHECK: "none"
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_NOHARDLINK: "true"
+      CCACHE_MAXSIZE: 5G
     steps:
       - name: Checkout Builder Repo
         uses: actions/checkout@v7
@@ -213,6 +218,15 @@ jobs:
           restore-keys: |
             ccache-${{ env.DEVICE_NAME }}-${{ env.KERNEL_BRANCH }}-
             ccache-${{ env.DEVICE_NAME }}-
+
+      - name: Setup ThinLTO Cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.thinlto-cache
+          key: thinlto-${{ env.DEVICE_NAME }}-${{ env.KERNEL_BRANCH }}-${{ github.sha }}
+          restore-keys: |
+            thinlto-${{ env.DEVICE_NAME }}-${{ env.KERNEL_BRANCH }}-
+            thinlto-${{ env.DEVICE_NAME }}-
       - name: Clone Kernel Source
         run: |
           echo "[+] Cloning ${{ env.KERNEL_REPO }} (branch: ${{ env.KERNEL_BRANCH }})..."
@@ -260,7 +274,16 @@ jobs:
 
           # Configure and verify ccache
           export CCACHE_DIR="$HOME/.cache/ccache"
-          ccache -M 2G
+          ccache -M 5G
+
+          # Set up ld.lld wrapper for ThinLTO caching
+          LDCACHE_DIR="$HOME/.thinlto-cache"
+          mkdir -p "$LDCACHE_DIR"
+          LD_WRAPPER="$HOME/bin/ld-wrapper"
+          mkdir -p "$HOME/bin"
+          LLD_BIN="$(command -v ld.lld)"
+          printf '#!/bin/bash\nexec "%s" "$@" --thinlto-cache-dir="%s" --thinlto-cache-policy=cache_size_bytes=3g --thinlto-jobs=%s\n' "$LLD_BIN" "$LDCACHE_DIR" "$(nproc)" > "$LD_WRAPPER"
+          chmod +x "$LD_WRAPPER"
           echo "[+] Initial Ccache status:"
           ccache -s
 
@@ -270,7 +293,7 @@ jobs:
             O=out
             ARCH="${{ env.ARCH }}"
             CC="ccache clang"
-            LD="ld.lld"
+            LD="$LD_WRAPPER"
             LLVM=1
             LLVM_IAS=1
             CLANG_TRIPLE="aarch64-linux-gnu-"
