@@ -149,7 +149,6 @@ jobs:
           echo "CLANG_BRANCH=${CLANG_BRANCH:-main}" >> $GITHUB_ENV
           echo "CLANG_DIR_NAME=${CLANG_DIR_NAME:-clang-r547379}" >> $GITHUB_ENV
           echo "KSU_HOOK_METHOD=${KSU_HOOK_METHOD:-manual}" >> $GITHUB_ENV
-          echo "BAKASU_REF=${BAKASU_REF:-v4.2.0-rc3}" >> $GITHUB_ENV
           echo "CHECK_CONFIGS=${CHECK_CONFIGS:-}" >> $GITHUB_ENV
 
           # Determine KERNEL_LOCALVERSION
@@ -226,8 +225,8 @@ jobs:
           echo "[+] Integrating Superuser provider: ${{ env.SU_LABEL }} (${{ env.SU_TYPE }})..."
 
           if [ "${{ env.SU_TYPE }}" = "bakasu" ]; then
-            echo "[+] Installing BakaSU driver (ref: ${BAKASU_REF})..."
-            curl -LSs "https://raw.githubusercontent.com/Baka-SU/BakaSU/main/kernel/setup.sh" | bash -s -- "${BAKASU_REF}"
+            echo "[+] Installing BakaSU driver..."
+            curl -LSs "https://raw.githubusercontent.com/Baka-SU/BakaSU/main/kernel/setup.sh" | bash -
           elif [ "${{ env.SU_TYPE }}" = "sukisu" ]; then
             echo "[+] Installing SukiSU-Ultra driver (sukisu.org)..."
             curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -
