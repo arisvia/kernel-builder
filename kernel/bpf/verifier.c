@@ -6114,6 +6114,7 @@ static int convert_ctx_accesses(struct bpf_verifier_env *env)
 	struct bpf_prog *new_prog;
 	enum bpf_access_type type;
 	bool is_narrower_load;
+	bpf_convert_ctx_access_t convert_ctx_access;
 
 	if (ops->gen_prologue) {
 		cnt = ops->gen_prologue(insn_buf, env->seen_direct_write,
@@ -6180,7 +6181,6 @@ static int convert_ctx_accesses(struct bpf_verifier_env *env)
 		if (!ctx_access)
 			continue;
 
-		bpf_convert_ctx_access_t convert_ctx_access;
 
 		switch (env->insn_aux_data[i + delta].ptr_type) {
 		case PTR_TO_CTX:
