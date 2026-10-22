@@ -9,3 +9,7 @@ toolchain/
 
 # Local environment overrides
 .env.local
+
+# AI session handoff scratchpads
+SESSION_HANDOFF.md
+*_HANDOFF.md
